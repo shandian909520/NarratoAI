@@ -50,7 +50,8 @@ def check_ffmpeg_installation() -> bool:
         bool: 如果安装则返回True，否则返回False
     """
     try:
-        subprocess.run(['ffmpeg', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
+        subprocess.run([ffmpeg_path, '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         return True
     except (subprocess.SubprocessError, FileNotFoundError):
         logger.error("ffmpeg未安装或不在系统PATH中，请安装ffmpeg")
@@ -82,8 +83,9 @@ def check_video_has_audio(video_path: str) -> bool:
         logger.warning(f"视频文件不存在: {video_path}")
         return False
 
+    ffprobe_path = ffmpeg_utils.get_ffprobe_path()
     probe_cmd = [
-        'ffprobe', '-v', 'error',
+        ffprobe_path, '-v', 'error',
         '-select_streams', 'a:0',
         '-show_entries', 'stream=codec_type',
         '-of', 'csv=p=0',
@@ -156,7 +158,8 @@ def process_single_video(
         raise FileNotFoundError(f"找不到视频文件: {input_path}")
 
     # 构建基本命令
-    command = ['ffmpeg', '-y']
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
+    command = [ffmpeg_path, '-y']
 
     # 安全检查：如果在Windows上，则慎用硬件加速
     is_windows = os.name == 'nt'
@@ -164,8 +167,9 @@ def process_single_video(
         logger.info("在Windows系统上检测到硬件加速请求，将进行额外的兼容性检查")
         try:
             # 对视频进行快速探测，检测其基本信息
+            ffprobe_path = ffmpeg_utils.get_ffprobe_path()
             probe_cmd = [
-                'ffprobe', '-v', 'error',
+                ffprobe_path, '-v', 'error',
                 '-select_streams', 'v:0',
                 '-show_entries', 'stream=codec_name,width,height',
                 '-of', 'csv=p=0',
@@ -255,7 +259,8 @@ def process_single_video(
     # 执行命令
     try:
         # logger.info(f"执行FFmpeg命令: {' '.join(command)}")
-        process = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # 使用 DEVNULL 避免 PIPE 缓冲区满导致死锁
+        process = subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         # logger.info(f"视频处理成功: {output_path}")
         return output_path
     except subprocess.CalledProcessError as e:
@@ -270,7 +275,8 @@ def process_single_video(
                 ffmpeg_utils.force_software_encoding()
 
                 # 构建新的命令，使用软件编码
-                fallback_cmd = ['ffmpeg', '-y', '-i', input_path]
+                ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
+                fallback_cmd = [ffmpeg_path, '-y', '-i', input_path]
 
                 # 保持原有的音频设置
                 if not keep_audio:
@@ -297,7 +303,7 @@ def process_single_video(
                 ])
 
                 logger.info("执行软件编码备选方案")
-                subprocess.run(fallback_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                subprocess.run(fallback_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 logger.info(f"使用软件编码成功处理视频: {output_path}")
                 return output_path
             except subprocess.CalledProcessError as fallback_error:
@@ -307,13 +313,14 @@ def process_single_video(
                 # 尝试最基本的编码参数
                 try:
                     logger.info("尝试最基本的编码参数")
+                    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
                     basic_cmd = [
-                        'ffmpeg', '-y', '-i', input_path,
+                        ffmpeg_path, '-y', '-i', input_path,
                         '-c:v', 'libx264', '-preset', 'ultrafast',
                         '-crf', '23', '-pix_fmt', 'yuv420p',
                         output_path
                     ]
-                    subprocess.run(basic_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    subprocess.run(basic_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                     logger.info(f"使用基本编码参数成功处理视频: {output_path}")
                     return output_path
                 except subprocess.CalledProcessError as basic_error:
@@ -475,8 +482,9 @@ def combine_clip_videos(
             create_ffmpeg_concat_file(video_paths_only, concat_file)
 
             # 合并所有视频流，但不包含音频
+            ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
             concat_cmd = [
-                'ffmpeg', '-y',
+                ffmpeg_path, '-y',
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', concat_file,
@@ -488,7 +496,7 @@ def combine_clip_videos(
                 video_concat_path
             ]
 
-            subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(concat_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             logger.info("视频流合并完成")
 
             # 2. 提取并合并有音频的片段
@@ -502,18 +510,19 @@ def combine_clip_videos(
 
             # 创建音频中间文件
             audio_files = []
+            ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
             for i, segment in enumerate(audio_segments):
                 # 提取音频
                 audio_file = os.path.join(temp_dir, f"audio_{i}.aac")
                 extract_audio_cmd = [
-                    'ffmpeg', '-y',
+                    ffmpeg_path, '-y',
                     '-i', segment["path"],
                     '-vn',  # 不包含视频
                     '-c:a', 'aac',
                     '-b:a', '128k',
                     audio_file
                 ]
-                subprocess.run(extract_audio_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                subprocess.run(extract_audio_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 audio_files.append({
                     "index": segment["index"],
                     "path": audio_file
@@ -525,9 +534,10 @@ def combine_clip_videos(
             current_time = 0.0
 
             # 获取每个视频片段的时长
+            ffprobe_path = ffmpeg_utils.get_ffprobe_path()
             for i, video in enumerate(processed_videos):
                 duration_cmd = [
-                    'ffprobe', '-v', 'error',
+                    ffprobe_path, '-v', 'error',
                     '-show_entries', 'format=duration',
                     '-of', 'csv=p=0',
                     video["path"]
@@ -550,8 +560,9 @@ def combine_clip_videos(
 
             # 4. 创建静音音频轨道作为基础
             silence_audio = os.path.join(temp_dir, "silence.aac")
+            ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
             create_silence_cmd = [
-                'ffmpeg', '-y',
+                ffmpeg_path, '-y',
                 '-f', 'lavfi',
                 '-i', f'anullsrc=r=44100:cl=stereo',
                 '-t', str(current_time),  # 总时长
@@ -559,7 +570,7 @@ def combine_clip_videos(
                 '-b:a', '128k',
                 silence_audio
             ]
-            subprocess.run(create_silence_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(create_silence_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
             # 5. 创建复杂滤镜命令以混合音频
             filter_script = os.path.join(temp_dir, "filter_script.txt")
@@ -588,8 +599,9 @@ def combine_clip_videos(
                 audio_inputs.extend(['-i', timing["file"]])
 
             mixed_audio = os.path.join(temp_dir, "mixed_audio.aac")
+            ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
             audio_mix_cmd = [
-                'ffmpeg', '-y'
+                ffmpeg_path, '-y'
             ] + audio_inputs + [
                 '-filter_complex_script', filter_script,
                 '-map', '[aout]',
@@ -598,12 +610,13 @@ def combine_clip_videos(
                 mixed_audio
             ]
 
-            subprocess.run(audio_mix_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(audio_mix_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             logger.info("音频混合完成")
 
             # 7. 将合并的视频和混合的音频组合在一起
+            ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
             final_cmd = [
-                'ffmpeg', '-y',
+                ffmpeg_path, '-y',
                 '-i', video_concat_path,
                 '-i', mixed_audio,
                 '-c:v', 'copy',
@@ -614,7 +627,7 @@ def combine_clip_videos(
                 output_video_path
             ]
 
-            subprocess.run(final_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(final_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             logger.info("视频最终合并完成")
 
             return output_video_path
@@ -629,8 +642,9 @@ def combine_clip_videos(
                 video_paths_only = [video["path"] for video in processed_videos]
                 create_ffmpeg_concat_file(video_paths_only, concat_file)
 
+                ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
                 backup_cmd = [
-                    'ffmpeg', '-y',
+                    ffmpeg_path, '-y',
                     '-f', 'concat',
                     '-safe', '0',
                     '-i', concat_file,
@@ -639,7 +653,7 @@ def combine_clip_videos(
                     output_video_path
                 ]
 
-                subprocess.run(backup_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                subprocess.run(backup_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 logger.warning("使用备用方法（无音频）成功合并视频")
                 return output_video_path
             except Exception as backup_error:

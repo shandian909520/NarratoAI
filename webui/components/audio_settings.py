@@ -3,6 +3,7 @@ import os
 from uuid import uuid4
 from app.config import config
 from app.services import voice
+from app.services.preview_manager import preview_manager
 from app.models.schema import AudioVolumeDefaults
 from app.utils import utils
 from webui.utils.cache import get_songs_cache
@@ -90,6 +91,9 @@ def render_audio_panel(tr):
 
         # 渲染背景音乐设置
         render_bgm_settings(tr)
+
+        # 渲染多音轨解说设置
+        render_multitrack_panel(tr)
 
 
 def render_tts_settings(tr):
@@ -941,3 +945,399 @@ def get_audio_params():
         'bgm_volume': st.session_state.get('bgm_volume', AudioVolumeDefaults.BGM_VOLUME),
         'tts_engine': st.session_state.get('tts_engine', "edge_tts"),
     }
+
+
+def render_multitrack_panel(tr):
+    """渲染多音轨解说设置面板"""
+    with st.container(border=True):
+        st.write(tr("Multi-track Narration Settings"))
+
+        # 多音轨开关
+        multitrack_enabled = st.checkbox(
+            tr("Enable Multi-track Narration"),
+            value=False,
+            help=tr("Enable multi-character dialogue with different voices")
+        )
+        st.session_state['multitrack_enabled'] = multitrack_enabled
+
+        if multitrack_enabled:
+            render_multitrack_settings(tr)
+
+
+def render_multitrack_settings(tr):
+    """渲染多音轨设置选项"""
+    from app.models.schema import DialogueRole, RoleVoiceConfig
+
+    # AI角色检测开关
+    use_ai_detection = st.checkbox(
+        tr("Use AI Role Detection"),
+        value=st.session_state.get('multitrack_ai_detection', True),
+        help=tr("Automatically detect characters from narration script")
+    )
+    st.session_state['multitrack_ai_detection'] = use_ai_detection
+
+    # 混音开关
+    enable_mixing = st.checkbox(
+        tr("Enable Audio Mixing"),
+        value=st.session_state.get('multitrack_mixing', True),
+        help=tr("Mix all voice tracks into a single audio file")
+    )
+    st.session_state['multitrack_mixing'] = enable_mixing
+
+    # 角色配置管理
+    st.write(tr("Character Voice Configuration"))
+
+    # 初始化角色配置
+    if 'role_configs' not in st.session_state:
+        st.session_state['role_configs'] = [
+            {
+                "role_id": "narrator",
+                "role_name": tr("Narrator"),
+                "role_type": DialogueRole.NARRATOR.value,
+                "voice_name": config.ui.get("voice_name", "zh-CN-XiaoxiaoNeural"),
+                "voice_rate": 1.0,
+                "volume": 1.0,
+                "pan_position": 0.0
+            }
+        ]
+
+    # 添加角色按钮
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button(tr("Add Character"), use_container_width=True):
+            new_role_id = f"role_{len(st.session_state['role_configs']) + 1}"
+            st.session_state['role_configs'].append({
+                "role_id": new_role_id,
+                "role_name": tr(f"Character {len(st.session_state['role_configs']) + 1}"),
+                "role_type": DialogueRole.MALE.value,
+                "voice_name": "zh-CN-YunxiNeural",
+                "voice_rate": 1.0,
+                "volume": 1.0,
+                "pan_position": -0.3
+            })
+            st.rerun()
+
+    # 角色列表
+    role_configs = st.session_state['role_configs']
+    roles_to_delete = []
+
+    for i, role in enumerate(role_configs):
+        with st.expander(f"{role['role_name']} ({DialogueRole(role['role_type']).value})", expanded=True):
+            # 角色名称
+            role['role_name'] = st.text_input(
+                tr("Character Name"),
+                value=role['role_name'],
+                key=f"role_name_{i}"
+            )
+
+            # 角色类型
+            role_type_options = [
+                (tr("Narrator"), DialogueRole.NARRATOR.value),
+                (tr("Male"), DialogueRole.MALE.value),
+                (tr("Female"), DialogueRole.FEMALE.value),
+                (tr("Elderly Male"), DialogueRole.ELDERLY_MALE.value),
+                (tr("Elderly Female"), DialogueRole.ELDERLY_FEMALE.value),
+                (tr("Child"), DialogueRole.CHILD.value),
+            ]
+
+            type_labels = [opt[0] for opt in role_type_options]
+            type_values = [opt[1] for opt in role_type_options]
+
+            saved_type = role.get('role_type', DialogueRole.NARRATOR.value)
+            if saved_type in type_values:
+                default_idx = type_values.index(saved_type)
+            else:
+                default_idx = 0
+
+            selected_type_idx = st.selectbox(
+                tr("Character Type"),
+                options=range(len(role_type_options)),
+                format_func=lambda x: role_type_options[x][0],
+                index=default_idx,
+                key=f"role_type_{i}"
+            )
+            role['role_type'] = role_type_options[selected_type_idx][1]
+
+            # 音色选择
+            voice_options = voice.get_all_azure_voices(filter_locals=["zh-CN", "en-US"])
+            voice_options = [v for v in voice_options if "-V2" not in v]
+
+            saved_voice = role.get('voice_name', '')
+            if saved_voice in voice_options:
+                default_voice_idx = voice_options.index(saved_voice)
+            else:
+                default_voice_idx = 0
+
+            selected_voice = st.selectbox(
+                tr("Voice"),
+                options=range(len(voice_options)),
+                format_func=lambda x: voice_options[x],
+                index=default_voice_idx,
+                key=f"role_voice_{i}"
+            )
+            role['voice_name'] = voice_options[selected_voice]
+
+            # 音量控制
+            role['volume'] = st.slider(
+                tr("Volume"),
+                min_value=0.0,
+                max_value=2.0,
+                value=role.get('volume', 1.0),
+                step=0.1,
+                key=f"role_volume_{i}"
+            )
+
+            # 声像位置
+            role['pan_position'] = st.slider(
+                tr("Pan Position"),
+                min_value=-1.0,
+                max_value=1.0,
+                value=role.get('pan_position', 0.0),
+                step=0.1,
+                help=tr("-1.0 = Left, 0.0 = Center, 1.0 = Right"),
+                key=f"role_pan_{i}"
+            )
+
+            # 删除角色按钮
+            if i > 0:  # 不能删除第一个（旁白）
+                if st.button(tr("Delete Character"), key=f"delete_role_{i}"):
+                    roles_to_delete.append(i)
+
+    # 删除选中的角色
+    for idx in sorted(roles_to_delete, reverse=True):
+        st.session_state['role_configs'].pop(idx)
+
+    # 默认旁白音色
+    st.write(tr("Default Narrator Voice"))
+    default_narrator_voice = st.selectbox(
+        tr("Default Voice for New Scripts"),
+        options=range(len(voice_options)),
+        format_func=lambda x: voice_options[x],
+        index=voice_options.index(config.ui.get("voice_name", "zh-CN-XiaoxiaoNeural")) if config.ui.get("voice_name", "zh-CN-XiaoxiaoNeural") in voice_options else 0,
+        help=tr("Default voice used for narrator in multi-track narration")
+    )
+    st.session_state['default_narrator_voice'] = voice_options[default_narrator_voice]
+
+
+def get_multitrack_settings():
+    """获取多音轨设置"""
+    from app.models.schema import DialogueRole, RoleVoiceConfig, MultiTrackSettings
+
+    role_configs = []
+    for role in st.session_state.get('role_configs', []):
+        role_configs.append(RoleVoiceConfig(
+            role_id=role['role_id'],
+            role_name=role['role_name'],
+            role_type=DialogueRole(role['role_type']),
+            voice_name=role['voice_name'],
+            voice_rate=role.get('voice_rate', 1.0),
+            volume=role.get('volume', 1.0),
+            pan_position=role.get('pan_position', 0.0)
+        ))
+
+    return MultiTrackSettings(
+        enabled=st.session_state.get('multitrack_enabled', False),
+        role_configs=role_configs,
+        use_ai_role_detection=st.session_state.get('multitrack_ai_detection', True),
+        enable_mixing=st.session_state.get('multitrack_mixing', True),
+        default_narrator_voice=st.session_state.get('default_narrator_voice', 'zh-CN-XiaoxiaoNeural')
+    )
+
+
+def render_audio_preview_panel(tr):
+    """渲染音频预览面板"""
+    with st.container(border=True):
+        st.write(tr("Audio Preview"))
+
+        # 预览文本输入
+        preview_text = st.text_area(
+            tr("Preview Text for TTS"),
+            value="欢迎使用 NarratoAI 语音合成预览功能，请输入您想要预览的文本内容。",
+            height=100,
+            key="audio_preview_text"
+        )
+
+        # TTS设置
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            preview_rate = st.slider(
+                tr("Preview Rate"),
+                min_value=0.5,
+                max_value=2.0,
+                value=st.session_state.get('voice_rate', 1.0),
+                step=0.1,
+                key="audio_preview_rate"
+            )
+        with col2:
+            preview_pitch = st.slider(
+                tr("Preview Pitch"),
+                min_value=0.5,
+                max_value=2.0,
+                value=st.session_state.get('voice_pitch', 1.0),
+                step=0.1,
+                key="audio_preview_pitch"
+            )
+        with col3:
+            preview_volume = st.slider(
+                tr("Preview Volume"),
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.get('voice_volume', 1.0),
+                step=0.1,
+                key="audio_preview_volume"
+            )
+
+        # 生成预览按钮
+        if st.button(tr("Generate Audio Preview"), use_container_width=True, key="generate_audio_preview"):
+            if preview_text:
+                with st.spinner(tr("Generating audio preview...")):
+                    generate_audio_preview(tr, preview_text, preview_rate, preview_pitch, preview_volume)
+            else:
+                st.warning(tr("Please enter preview text"))
+
+        # 显示已生成的预览
+        if 'audio_preview_path' in st.session_state and st.session_state['audio_preview_path']:
+            audio_path = st.session_state['audio_preview_path']
+            if os.path.exists(audio_path):
+                st.success(tr("Audio preview generated successfully"))
+
+                # 显示波形
+                waveform_html = render_waveform_preview(audio_path, tr)
+                if waveform_html:
+                    st.markdown(waveform_html, unsafe_allow_html=True)
+
+                # 播放音频
+                st.audio(audio_path, format='audio/mp3')
+
+                # 清理按钮
+                if st.button(tr("Clear Preview"), key="clear_audio_preview"):
+                    try:
+                        os.remove(audio_path)
+                        st.session_state.pop('audio_preview_path', None)
+                        st.rerun()
+                    except:
+                        pass
+
+
+def generate_audio_preview(tr, text: str, rate: float, pitch: float, volume: float):
+    """生成音频预览"""
+    try:
+        tts_engine = st.session_state.get('tts_engine', 'edge_tts')
+
+        # 获取语音名称
+        voice_name = config.ui.get("voice_name", "")
+        if not voice_name:
+            voice_name = "zh-CN-XiaoxiaoNeural-Female"
+
+        # 创建临时文件
+        temp_dir = utils.storage_dir("temp/preview", create=True)
+        audio_file = os.path.join(temp_dir, f"preview_{uuid4().hex[:8]}.mp3")
+
+        # 调用TTS
+        sub_maker = voice.tts(
+            text=text,
+            voice_name=voice_name,
+            voice_rate=rate,
+            voice_pitch=pitch,
+            voice_file=audio_file,
+            tts_engine=tts_engine
+        )
+
+        if sub_maker and os.path.exists(audio_file):
+            st.session_state['audio_preview_path'] = audio_file
+            # 生成波形数据
+            waveform_data = preview_manager.generate_waveform_data(audio_file)
+            st.session_state['audio_waveform_data'] = waveform_data
+        else:
+            st.error(tr("Failed to generate audio"))
+
+    except Exception as e:
+        st.error(f"{tr('Error')}: {str(e)}")
+        logger.error(f"生成音频预览失败: {e}")
+
+
+def render_waveform_preview(audio_path: str, tr) -> str:
+    """渲染波形预览"""
+    try:
+        waveform_data = preview_manager.generate_waveform_data(audio_path)
+        if not waveform_data:
+            return ""
+
+        # 获取波形图片
+        waveform_image = preview_manager.generate_waveform_image(waveform_data)
+        if not waveform_image:
+            return ""
+
+        # 获取图片的data URL
+        data_url = preview_manager.get_preview_data_url(waveform_image)
+
+        # 获取音频时长
+        duration = 5.0
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(audio_path)
+            duration = len(audio) / 1000.0
+        except:
+            pass
+
+        html = f"""
+        <style>
+        .waveform-preview-container {{
+            width: 100%;
+            max-width: 600px;
+            margin: 15px auto;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+        }}
+        .waveform-image {{
+            width: 100%;
+            border-radius: 5px;
+        }}
+        .waveform-controls {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            color: #888;
+            font-size: 14px;
+        }}
+        </style>
+        <div class="waveform-preview-container">
+            <img class="waveform-image" src="{data_url}" alt="Waveform">
+            <div class="waveform-controls">
+                <span>{tr('Waveform')}</span>
+                <span>{duration:.1f}s</span>
+            </div>
+        </div>
+        """
+        return html
+
+    except Exception as e:
+        logger.error(f"渲染波形预览失败: {e}")
+        return ""
+
+
+def render_bgm_preview_panel(tr):
+    """渲染背景音乐预览面板"""
+    with st.container(border=True):
+        st.write(tr("Background Music Preview"))
+
+        # 获取背景音乐列表
+        songs_cache = get_songs_cache()
+        if not songs_cache:
+            st.info(tr("No background music available"))
+            return
+
+        # 显示音乐列表
+        for i, song in enumerate(songs_cache[:10]):
+            with st.expander(f"{song.get('name', tr('Unknown'))}", expanded=False):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"{tr('Duration')}: {song.get('duration', 0):.1f}s")
+                    if song.get('style'):
+                        st.text(f"{tr('Style')}: {song.get('style')}")
+                with col2:
+                    if song.get('path') and os.path.exists(song['path']):
+                        if st.button(tr("Play"), key=f"play_bgm_{i}"):
+                            st.audio(song['path'], format='audio/mp3')

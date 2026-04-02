@@ -165,7 +165,8 @@ def build_ffmpeg_command(
     Returns:
         List[str]: ffmpeg命令列表
     """
-    cmd = ["ffmpeg", "-y"]
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
+    cmd = [ffmpeg_path, "-y"]
     
     # 关键修正：对于视频裁剪，不使用CUDA硬件解码，只使用NVENC编码器
     # 这样能避免滤镜链格式转换错误，同时保持编码性能优势
@@ -363,8 +364,9 @@ def try_compatibility_fallback(
         bool: 是否成功
     """
     # 兼容性模式：避免所有可能的滤镜链问题
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
     fallback_cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error",
         "-i", input_path,
         "-ss", start_time,
         "-to", end_time,
@@ -404,8 +406,9 @@ def try_software_fallback(
         bool: 是否成功
     """
     # 纯软件编码
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
     fallback_cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error",
         "-i", input_path,
         "-ss", start_time,
         "-to", end_time,
@@ -444,8 +447,9 @@ def try_basic_fallback(
         bool: 是否成功
     """
     # 最基本的编码参数
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
     fallback_cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error",
         "-i", input_path,
         "-ss", start_time,
         "-to", end_time,
@@ -527,8 +531,9 @@ def try_fallback_encoding(
         bool: 是否成功
     """
     # 最简单的软件编码命令
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
     fallback_cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_path, "-y",
         "-i", input_path,
         "-ss", start_time,
         "-to", end_time,
@@ -716,7 +721,8 @@ def _build_ffmpeg_command_with_audio_control(
     Returns:
         List[str]: ffmpeg命令列表
     """
-    cmd = ["ffmpeg", "-y"]
+    ffmpeg_path = ffmpeg_utils.get_ffmpeg_path()
+    cmd = [ffmpeg_path, "-y"]
 
     # 硬件加速设置（参考原有逻辑）
     if encoder_config["video_codec"] == "h264_nvenc":
@@ -797,6 +803,10 @@ def clip_video_unified(
     Returns:
         Dict[str, str]: 片段ID到裁剪后视频路径的映射
     """
+    # 检查 ffmpeg 是否可用（会自动设置 PATH）
+    if not ffmpeg_utils.check_ffmpeg_installation():
+        raise RuntimeError("ffmpeg 未安装或不可用，无法处理视频")
+
     # 检查视频文件是否存在
     if not os.path.exists(video_origin_path):
         raise FileNotFoundError(f"视频文件不存在: {video_origin_path}")

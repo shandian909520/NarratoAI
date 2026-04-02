@@ -1,10 +1,18 @@
-import streamlit as st
 import os
 import sys
+
+# 修复 FFMPEG_BINARY 环境变量问题
+# 必须在导入 moviepy 之前设置（通过 app.config -> app.utils -> app.services.material 间接导入）
+ffmpeg_binary = os.environ.get('FFMPEG_BINARY', '')
+if ffmpeg_binary and not ffmpeg_binary.endswith('.exe'):
+    # 如果 FFMPEG_BINARY 指向目录而不是可执行文件，使用 imageio 的 ffmpeg
+    os.environ['FFMPEG_BINARY'] = 'ffmpeg-imageio'
+
+import streamlit as st
 from loguru import logger
 from app.config import config
 from webui.components import basic_settings, video_settings, audio_settings, subtitle_settings, script_settings, \
-    system_settings
+    system_settings, batch_settings
 # from webui.utils import cache, file_utils
 from app.utils import utils
 from app.utils import ffmpeg_utils
@@ -132,10 +140,12 @@ def render_generate_button():
     if st.button(tr("Generate Video"), use_container_width=True, type="primary"):
         from app.services import task as tm
         from app.services import state as sm
+        from app.services.batch_processor import add_to_queue, QueueManager
         from app.models import const
         import threading
         import time
         import uuid
+        from datetime import datetime
 
         config.save_config()
 
@@ -168,6 +178,15 @@ def render_generate_button():
         # 生成一个新的task_id用于本次处理
         task_id = str(uuid.uuid4())
 
+        # 同时将任务添加到批量队列
+        task_name = f"Task_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        queue_item_id = add_to_queue(
+            name=task_name,
+            video_path=st.session_state.get('video_origin_path'),
+            script_path=st.session_state.get('video_clip_json_path')
+        )
+        logger.info(f"任务已添加到队列: {queue_item_id} - {task_name}")
+
         # 创建进度条
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -192,15 +211,29 @@ def render_generate_button():
             if task:
                 progress = task.get("progress", 0)
                 state = task.get("state")
-                
+
                 # 更新进度条
                 progress_bar.progress(progress / 100)
                 status_text.text(f"Processing... {progress}%")
 
+                # 同时更新队列项的进度
+                queue = QueueManager.get_instance()
+                queue_item = queue.get_item(queue_item_id)
+                if queue_item:
+                    queue_item.progress = progress
+                    queue.update_item(queue_item)
+
                 if state == const.TASK_STATE_COMPLETE:
                     status_text.text(tr("视频生成完成"))
                     progress_bar.progress(1.0)
-                    
+
+                    # 更新队列项状态
+                    if queue_item:
+                        queue_item.status = "complete"
+                        queue_item.completed_at = datetime.now().isoformat()
+                        queue_item.result_video = task.get("videos", [None])[0] if task.get("videos") else None
+                        queue.update_item(queue_item)
+
                     # 显示结果
                     video_files = task.get("videos", [])
                     try:
@@ -210,14 +243,24 @@ def render_generate_button():
                                 player_cols[i * 2 + 1].video(url)
                     except Exception as e:
                         logger.error(f"播放视频失败: {e}")
-                    
+
                     st.success(tr("视频生成完成"))
                     break
-                
+
                 elif state == const.TASK_STATE_FAILED:
+                    status_text.text(tr("任务失败"))
+                    progress_bar.progress(0)
+
+                    # 更新队列项状态
+                    if queue_item:
+                        queue_item.status = "failed"
+                        queue_item.error_message = task.get("message", "Unknown error")
+                        queue_item.completed_at = datetime.now().isoformat()
+                        queue.update_item(queue_item)
+
                     st.error(f"任务失败: {task.get('message', 'Unknown error')}")
                     break
-            
+
             time.sleep(0.5)
 
 
@@ -272,16 +315,30 @@ def main():
     panel = st.columns(3)
     with panel[0]:
         script_settings.render_script_panel(tr)
+        # 添加脚本预览面板
+        script_settings.render_script_preview_panel(tr)
     with panel[1]:
         audio_settings.render_audio_panel(tr)
+        # 添加音频预览面板
+        audio_settings.render_audio_preview_panel(tr)
+        # 添加背景音乐预览面板
+        audio_settings.render_bgm_preview_panel(tr)
     with panel[2]:
         video_settings.render_video_panel(tr)
         subtitle_settings.render_subtitle_panel(tr)
+        # 添加字幕预览面板
+        subtitle_settings.render_subtitle_preview_panel(tr)
 
     # 放到最后渲染可能使用PyTorch的部分
     # 渲染系统设置面板
     with panel[2]:
         system_settings.render_system_panel(tr)
+
+    # 渲染批量处理设置面板
+    batch_settings.init_batch_session_state()
+    st.divider()
+    batch_settings.render_batch_settings(tr)
+    batch_settings.render_add_to_queue(tr)
 
     # 放到最后渲染生成按钮和处理逻辑
     render_generate_button()

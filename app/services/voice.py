@@ -18,7 +18,33 @@ try:
     MOVIEPY_AVAILABLE = True
 except ImportError:
     MOVIEPY_AVAILABLE = False
-    logger.warning("moviepy 未安装，将使用估算方法计算音频时长")
+
+
+def get_submaker_data(sub_maker: SubMaker) -> Tuple[List, List]:
+    """
+    兼容新旧版本 edge-tts 的 SubMaker 对象
+    新版本 (7.x) 使用 cues 属性 (Subtitle 对象列表)，旧版本使用 subs 和 offset 属性
+
+    Returns:
+        Tuple[List, List]: (offsets, subs) - offset 是 [(start, end), ...] (100纳秒单位), subs 是 [text, ...]
+    """
+    if hasattr(sub_maker, 'cues') and sub_maker.cues:
+        # 新版本 edge-tts (7.x) - cues 是 Subtitle 对象列表
+        offsets = []
+        subs = []
+        for cue in sub_maker.cues:
+            # Subtitle 对象有 .start, .end (timedelta), .content (str) 属性
+            # 转换 timedelta 为 100纳秒单位，与下游代码兼容
+            start_100ns = int(cue.start.total_seconds() * 10_000_000)
+            end_100ns = int(cue.end.total_seconds() * 10_000_000)
+            offsets.append((start_100ns, end_100ns))
+            subs.append(cue.content)
+        return offsets, subs
+    elif hasattr(sub_maker, 'subs') and hasattr(sub_maker, 'offset'):
+        # 旧版本 edge-tts (6.x)
+        return sub_maker.offset, sub_maker.subs
+    else:
+        return [], []
 import time
 
 from app.config import config
@@ -1152,21 +1178,20 @@ def azure_tts_v1(
                 communicate = edge_tts.Communicate(text, voice_name, rate=rate_str, pitch=pitch_str, proxy=config.proxy.get("http"))
                 sub_maker = edge_tts.SubMaker()
                 audio_data = bytes()  # 用于存储音频数据
-                
+
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
                         audio_data += chunk["data"]
-                    elif chunk["type"] == "WordBoundary":
-                        sub_maker.create_sub(
-                            (chunk["offset"], chunk["duration"]), chunk["text"]
-                        )
+                    elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
+                        # edge-tts 7.x 使用 SentenceBoundary，旧版使用 WordBoundary
+                        sub_maker.feed(chunk)
                 return sub_maker, audio_data
 
             # 获取音频数据和字幕信息
             sub_maker, audio_data = asyncio.run(_do())
-            
-            # 验证数据是否有效
-            if not sub_maker or not sub_maker.subs or not audio_data:
+
+            # 验证数据是否有效 (新版本使用 cues 属性)
+            if not sub_maker or not sub_maker.cues or not audio_data:
                 logger.warning(f"failed, invalid data generated")
                 if i < 2:
                     time.sleep(1)
@@ -1334,7 +1359,8 @@ def create_subtitle_from_multiple(text: str, sub_maker_list: List[SubMaker], lis
             current_start = None
             current_end = None
 
-            for offset, sub in zip(sub_maker.offset, sub_maker.subs):
+            offsets, subs = get_submaker_data(sub_maker)
+            for offset, sub in zip(offsets, subs):
                 sub = unescape(sub).strip()
                 sub_start = utils.seconds_to_time(utils.time_to_seconds(start_time) + offset[0] / 10000000 * time_ratio)
                 sub_end = utils.seconds_to_time(utils.time_to_seconds(start_time) + offset[1] / 10000000 * time_ratio)
@@ -1445,7 +1471,8 @@ def create_subtitle(sub_maker: submaker.SubMaker, text: str, subtitle_file: str)
     sub_line = ""
 
     try:
-        for _, (offset, sub) in enumerate(zip(sub_maker.offset, sub_maker.subs)):
+        offsets, subs = get_submaker_data(sub_maker)
+        for _, (offset, sub) in enumerate(zip(offsets, subs)):
             _start_time, end_time = offset
             if start_time < 0:
                 start_time = _start_time
@@ -1501,27 +1528,30 @@ def get_audio_duration(sub_maker: submaker.SubMaker):
     """
     获取音频时长
     """
-    if not sub_maker.offset:
+    offsets, subs = get_submaker_data(sub_maker)
+    if not offsets:
         return 0.0
-    return sub_maker.offset[-1][1] / 10000000
+    return offsets[-1][1] / 10000000
 
 
-def tts_multiple(task_id: str, list_script: list, voice_name: str, voice_rate: float, voice_pitch: float, tts_engine: str = "azure"):
+def tts_multiple(task_id: str, list_script: list, voice_name: str, voice_rate: float, voice_pitch: float, tts_engine: str = "azure", progress_callback=None):
     """
     根据JSON文件中的多段文本进行TTS转换
-    
+
     :param task_id: 任务ID
     :param list_script: 脚本列表
     :param voice_name: 语音名称
     :param voice_rate: 语音速率
     :param tts_engine: TTS 引擎
+    :param progress_callback: 进度回调函数，签名为 callback(current, total)
     :return: 生成的音频文件列表
     """
     voice_name = parse_voice_name(voice_name)
     output_dir = utils.task_dir(task_id)
     tts_results = []
 
-    for item in list_script:
+    total_items = len(list_script)
+    for idx, item in enumerate(list_script):
         if item['OST'] != 1:
             # 将时间戳中的冒号替换为下划线
             timestamp = item['timestamp'].replace(':', '_')
@@ -1543,6 +1573,8 @@ def tts_multiple(task_id: str, list_script: list, voice_name: str, voice_rate: f
                 logger.error(f"无法为时间戳 {timestamp} 生成音频; "
                              f"如果您在中国，请使用VPN; "
                              f"或者使用其他 tts 引擎")
+                if progress_callback:
+                    progress_callback(idx + 1, total_items)
                 continue
             else:
                 # SoulVoice、Qwen3、IndexTTS2 引擎不生成字幕文件
@@ -1570,6 +1602,10 @@ def tts_multiple(task_id: str, list_script: list, voice_name: str, voice_rate: f
                 "text": text,
             })
             logger.info(f"已生成音频文件: {audio_file}")
+
+        # 调用进度回调
+        if progress_callback:
+            progress_callback(idx + 1, total_items)
 
     return tts_results
 

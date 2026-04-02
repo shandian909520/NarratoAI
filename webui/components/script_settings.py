@@ -8,6 +8,7 @@ from loguru import logger
 
 from app.config import config
 from app.models.schema import VideoClipParams
+from app.services.preview_manager import preview_manager
 from app.services.subtitle_text import decode_subtitle_bytes
 from app.utils import utils, check_script
 from webui.tools.generate_script_docu import generate_script_docu
@@ -549,3 +550,130 @@ def get_script_params():
         'video_name': st.session_state.get('video_name', ''),
         'video_plot': st.session_state.get('video_plot', '')
     }
+
+
+def render_script_preview_panel(tr):
+    """渲染脚本预览面板"""
+    with st.container(border=True):
+        st.write(tr("Script Preview"))
+
+        # 获取当前脚本内容
+        script_json = st.session_state.get('video_clip_json', [])
+
+        if not script_json:
+            st.info(tr("No script available for preview. Please generate or load a script first."))
+            return
+
+        # 预览模式选择
+        preview_mode = st.radio(
+            tr("Preview Mode"),
+            options=[tr("View Mode"), tr("Edit Mode")],
+            horizontal=True,
+            key="script_preview_mode"
+        )
+
+        if preview_mode == tr("View Mode"):
+            # 显示模式 - 格式化展示
+            render_script_view_mode(tr, script_json)
+        else:
+            # 编辑模式 - 支持直接编辑
+            render_script_edit_mode(tr)
+
+
+def render_script_view_mode(tr, script_json):
+    """渲染脚本查看模式"""
+    # 解析脚本
+    items = preview_manager.parse_script_json(script_json)
+
+    if not items:
+        st.warning(tr("Unable to parse script content."))
+        return
+
+    # 统计信息
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(tr("Total Segments"), len(items))
+    with col2:
+        total_duration = 0
+        for item in items:
+            try:
+                if '-' in item.timestamp:
+                    start, end = item.timestamp.split('-')
+                    start_s = parse_timestamp(start)
+                    end_s = parse_timestamp(end)
+                    total_duration += (end_s - start_s)
+            except:
+                pass
+        st.metric(tr("Total Duration"), f"{total_duration:.1f}s")
+    with col3:
+        narration_chars = sum(len(item.narration) for item in items)
+        st.metric(tr("Total Narration"), f"{narration_chars} chars")
+
+    st.divider()
+
+    # 分段预览
+    for i, item in enumerate(items):
+        with st.expander(f"{tr('Segment')} {item.id}: {item.timestamp}", expanded=i == 0):
+            col1, col2 = st.columns([3, 1])
+
+            with col1:
+                st.markdown(f"**{tr('Picture')}:** {item.picture}")
+                st.markdown(f"**{tr('Narration')}:**")
+                st.info(item.narration)
+
+            with col2:
+                if item.ost:
+                    st.success(tr("Has Sound Effect"))
+                else:
+                    st.text(tr("No Sound Effect"))
+
+            # 预览按钮
+            if st.button(tr("Preview"), key=f"preview_script_{i}"):
+                st.session_state['preview_segment_index'] = i
+                st.session_state['preview_segment_data'] = item
+
+
+def render_script_edit_mode(tr):
+    """渲染脚本编辑模式"""
+    script_json = st.session_state.get('video_clip_json', [])
+
+    if isinstance(script_json, list):
+        edited_json = st.data_editor(
+            json.dumps(script_json, ensure_ascii=False, indent=2),
+            height=400,
+            key="script_json_editor"
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button(tr("Apply Changes"), use_container_width=True):
+                try:
+                    st.session_state['video_clip_json'] = json.loads(edited_json)
+                    st.success(tr("Changes applied successfully"))
+                    st.rerun()
+                except json.JSONDecodeError:
+                    st.error(tr("Invalid JSON format"))
+
+        with col2:
+            if st.button(tr("Format JSON"), use_container_width=True):
+                try:
+                    parsed = json.loads(edited_json)
+                    st.session_state['video_clip_json'] = parsed
+                    st.success(tr("JSON formatted"))
+                except:
+                    st.error(tr("Invalid JSON"))
+    else:
+        st.warning(tr("Script content is not in valid format."))
+
+
+def parse_timestamp(timestamp: str) -> float:
+    """解析时间戳字符串为秒数"""
+    # 支持格式: 00:00:00,600 或 00:00:00.600
+    timestamp = timestamp.replace(',', '.')
+    parts = timestamp.split(':')
+    if len(parts) == 3:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+        return hours * 3600 + minutes * 60 + seconds
+    return 0.0

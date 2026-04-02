@@ -206,3 +206,66 @@ class SubtitlePosition(str, Enum):
     CENTER = "center"
     BOTTOM = "bottom"
 
+
+class DialogueRole(str, Enum):
+    """对话角色类型"""
+    NARRATOR = "narrator"          # 旁白
+    MALE = "male"                  # 男性角色
+    FEMALE = "female"              # 女性角色
+    ELDERLY_MALE = "elderly_male"  # 老年男性
+    ELDERLY_FEMALE = "elderly_female"  # 老年女性
+    CHILD = "child"                # 儿童
+    CUSTOM = "custom"              # 自定义角色
+
+
+class CoverStyle(str, Enum):
+    """封面样式"""
+    CINEMATIC = "cinematic"       # 电影感
+    COMEDIC = "comedic"           # 搞笑风格
+    MYSTERIOUS = "mysterious"     # 悬疑风格
+    DRAMATIC = "dramatic"         # 戏剧风格
+    MINIMALIST = "minimalist"     # 简约风格
+    VIBRANT = "vibrant"          # 活力风格
+
+
+class CoverPlatform(str, Enum):
+    """封面平台适配"""
+    DOUYIN = "douyin"            # 抖音
+    BILIBILI = "bilibili"         # B站
+    YOUTUBE = "youtube"           # YouTube
+    WEIBO = "weibo"              # 微博
+    XIAOHONGSHU = "xiaohongshu"  # 小红书
+    UNIVERSAL = "universal"       # 通用
+
+
+class RoleVoiceConfig(BaseModel):
+    """角色音色配置"""
+    role_id: str = ""                      # 角色ID
+    role_name: str = ""                    # 角色名称
+    role_type: DialogueRole = DialogueRole.NARRATOR  # 角色类型
+    voice_name: str = ""                    # 音色名称
+    voice_rate: float = 1.0                # 语速
+    voice_pitch: float = 1.0               # 音调
+    volume: float = 1.0                    # 音量
+    pan_position: float = 0.0              # 声像位置 (-1.0 左 到 1.0 右)
+
+
+class CoverSettings(BaseModel):
+    """封面设置"""
+    enabled: bool = False                    # 是否启用封面生成
+    style: CoverStyle = CoverStyle.CINEMATIC  # 封面样式
+    platform: CoverPlatform = CoverPlatform.DOUYIN  # 目标平台
+    title_text: str = ""                    # 标题文字
+    subtitle_text: str = ""                # 副标题文字
+    use_ai_generation: bool = True         # 是否使用AI生成
+    cover_image_path: str = ""              # 生成的封面图片路径
+
+
+class MultiTrackSettings(BaseModel):
+    """多音轨解说设置"""
+    enabled: bool = False                    # 是否启用多音轨
+    role_configs: List[RoleVoiceConfig] = []  # 角色配置列表
+    use_ai_role_detection: bool = True     # 是否使用AI进行角色识别
+    enable_mixing: bool = True             # 是否启用混音
+    default_narrator_voice: str = "zh-CN-XiaoxiaoNeural"  # 默认旁白音色
+

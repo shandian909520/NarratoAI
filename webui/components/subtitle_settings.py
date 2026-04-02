@@ -2,6 +2,7 @@
 from loguru import logger
 import streamlit as st
 from app.config import config
+from app.services.preview_manager import preview_manager
 from webui.utils.cache import get_fonts_cache
 import os
 
@@ -162,3 +163,100 @@ def get_subtitle_params():
         'stroke_color': st.session_state.get('stroke_color', '#000000'),
         'stroke_width': st.session_state.get('stroke_width', 1.5),
     }
+
+
+def render_subtitle_preview_panel(tr):
+    """渲染字幕预览面板"""
+    with st.container(border=True):
+        st.write(tr("Subtitle Preview"))
+
+        # 预览示例文本
+        preview_text = st.text_input(
+            tr("Preview Text"),
+            value="这是一段测试字幕，用于预览样式效果",
+            key="subtitle_preview_text"
+        )
+
+        # 获取当前样式设置
+        font_name = st.session_state.get('font_name', config.ui.get('font_name', 'SimHei'))
+        font_size = st.session_state.get('font_size', config.ui.get('font_size', 36))
+        text_color = st.session_state.get('text_fore_color', config.ui.get('text_fore_color', '#FFFFFF'))
+        stroke_color = st.session_state.get('stroke_color', '#000000')
+        stroke_width = st.session_state.get('stroke_width', 1.5)
+        position = st.session_state.get('subtitle_position', 'bottom')
+        custom_position = st.session_state.get('custom_position', 70.0)
+
+        # 预览样式设置
+        col1, col2 = st.columns(2)
+        with col1:
+            preview_font_size = st.slider(
+                tr("Preview Font Size"),
+                min_value=20,
+                max_value=80,
+                value=font_size,
+                key="preview_font_size"
+            )
+        with col2:
+            preview_position = st.selectbox(
+                tr("Preview Position"),
+                options=["top", "center", "bottom", "custom"],
+                index=["top", "center", "bottom", "custom"].index(position) if position in ["top", "center", "bottom", "custom"] else 2,
+                key="preview_position"
+            )
+
+        # 实时预览
+        st.write(tr("Live Preview"))
+        preview_html = preview_manager.get_subtitle_style_preview_html(
+            text=preview_text,
+            font_size=preview_font_size,
+            text_color=text_color,
+            stroke_color=stroke_color,
+            stroke_width=stroke_width,
+            position=preview_position
+        )
+        st.markdown(preview_html, unsafe_allow_html=True)
+
+        # 16:9 预览
+        st.write(tr("16:9 Preview"))
+        preview_html_169 = preview_manager.get_subtitle_style_preview_html(
+            text=preview_text[:30] + "..." if len(preview_text) > 30 else preview_text,
+            font_size=preview_font_size,
+            text_color=text_color,
+            stroke_color=stroke_color,
+            stroke_width=stroke_width,
+            position=preview_position
+        )
+        st.markdown(preview_html_169, unsafe_allow_html=True)
+
+        # 从SRT文件预览字幕
+        st.divider()
+        st.write(tr("SRT Subtitle Preview"))
+
+        subtitle_content = st.session_state.get('subtitle_content', '')
+        if subtitle_content:
+            try:
+                subtitle_items = preview_manager.parse_srt_content(subtitle_content)
+                if subtitle_items:
+                    st.success(f"{tr('Found')} {len(subtitle_items)} {tr('subtitle items')}")
+
+                    # 显示字幕列表
+                    for i, item in enumerate(subtitle_items[:5]):
+                        with st.expander(f"{tr('Subtitle')} {item.index}: {item.start_time:.1f}s - {item.end_time:.1f}s"):
+                            preview_html = preview_manager.get_subtitle_style_preview_html(
+                                text=item.text,
+                                font_size=preview_font_size,
+                                text_color=text_color,
+                                stroke_color=stroke_color,
+                                stroke_width=stroke_width,
+                                position=preview_position
+                            )
+                            st.markdown(preview_html, unsafe_allow_html=True)
+
+                    if len(subtitle_items) > 5:
+                        st.info(f"{tr('And more')} {len(subtitle_items) - 5} {tr('subtitles')}")
+                else:
+                    st.warning(tr("No valid subtitle items found"))
+            except Exception as e:
+                st.error(f"{tr('Failed to parse SRT')}: {str(e)}")
+        else:
+            st.info(tr("No SRT content loaded"))

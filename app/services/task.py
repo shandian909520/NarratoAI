@@ -263,7 +263,7 @@ def start_subclip(task_id: str, params: VideoClipParams, subclip_path_videos: di
     return kwargs
 
 
-def start_subclip_unified(task_id: str, params: VideoClipParams):
+def start_subclip_unified(task_id: str, params: VideoClipParams, progress_callback=None):
     """
     统一视频裁剪处理函数 - 完全基于OST类型的新实现
 
@@ -273,15 +273,26 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
     Args:
         task_id: 任务ID
         params: 视频参数
+        progress_callback: 进度回调函数，签名为 callback(stage, step, progress, **kwargs)
+                          stage: 阶段名称 (script/tts/clip/subtitle/merge)
+                          step: 步骤名称
+                          progress: 进度值 0-100
     """
     global merged_audio_path, merged_subtitle_path
 
     logger.info(f"\n\n## 开始统一视频处理任务: {task_id}")
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=0)
 
+    def update_progress(stage: str, step: str, progress: float, **kwargs):
+        """更新进度"""
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=progress)
+        if progress_callback:
+            progress_callback(stage, step, progress, **kwargs)
+
     """
     1. 加载剪辑脚本
     """
+    update_progress("script", "load", 5)
     logger.info("\n\n## 1. 加载视频脚本")
     video_script_path = path.join(params.video_clip_json_path)
 
@@ -304,9 +315,12 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
         logger.error(f"解说脚本文件不存在: {video_script_path}，请先点击【保存脚本】按钮保存脚本后再生成视频")
         raise ValueError("解说脚本文件不存在！请先点击【保存脚本】按钮保存脚本后再生成视频。")
 
+    update_progress("script", "load", 15)
+
     """
     2. 使用 TTS 生成音频素材
     """
+    update_progress("tts", "prepare", 20)
     logger.info("\n\n## 2. 根据OST设置生成音频列表")
     # 只为OST=0 or 2的判断生成音频， OST=0 仅保留解说 OST=2 保留解说和原声
     tts_segments = [
@@ -315,6 +329,11 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
     ]
     logger.debug(f"需要生成TTS的片段数: {len(tts_segments)}")
 
+    # TTS生成进度
+    def tts_progress_callback(current: int, total: int):
+        progress = 20 + (current / total) * 20  # 20-40%
+        update_progress("tts", f"generate_{current}/{total}", progress)
+
     tts_results = voice.tts_multiple(
         task_id=task_id,
         list_script=tts_segments,  # 只传入需要TTS的片段
@@ -322,13 +341,15 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
         voice_name=params.voice_name,
         voice_rate=params.voice_rate,
         voice_pitch=params.voice_pitch,
+        progress_callback=tts_progress_callback,
     )
 
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=20)
+    update_progress("tts", "complete", 40)
 
     """
     3. 统一视频裁剪 - 基于OST类型的差异化裁剪策略
     """
+    update_progress("clip", "prepare", 45)
     logger.info("\n\n## 3. 统一视频裁剪（基于OST类型）")
 
     # 使用新的统一裁剪策略
@@ -337,6 +358,8 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
         script_list=list_script,
         tts_results=tts_results
     )
+
+    update_progress("clip", "processing", 55)
 
     # 更新 list_script 中的时间戳和路径信息
     tts_clip_result = {tts_result['_id']: tts_result['audio_file'] for tts_result in tts_results}
@@ -347,11 +370,12 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
 
     logger.info(f"统一裁剪完成，处理了 {len(video_clip_result)} 个视频片段")
 
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=60)
+    update_progress("clip", "complete", 60)
 
     """
     4. 合并音频和字幕
     """
+    update_progress("merge", "audio", 65)
     logger.info("\n\n## 4. 合并音频和字幕")
     total_duration = sum([script["duration"] for script in new_script_list])
     if tts_segments:
@@ -363,6 +387,7 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
                 list_script=new_script_list
             )
             logger.info(f"音频文件合并成功->{merged_audio_path}")
+            update_progress("merge", "audio_merged", 70)
 
             # 合并字幕文件
             merged_subtitle_path = subtitle_merger.merge_subtitle_files(new_script_list)
@@ -371,6 +396,7 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
             else:
                 logger.warning("没有有效的字幕内容，将生成无字幕视频")
                 merged_subtitle_path = ""
+            update_progress("merge", "subtitle_merged", 75)
         except Exception as e:
             logger.error(f"合并音频/字幕文件失败: {str(e)}")
             # 确保即使合并失败也有默认值
@@ -386,6 +412,7 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
     """
     5. 合并视频
     """
+    update_progress("merge", "video_prepare", 78)
     final_video_paths = []
     combined_video_paths = []
 
@@ -410,11 +437,12 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
         video_aspect=params.video_aspect,
         threads=params.n_threads
     )
-    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=80)
+    update_progress("merge", "video_merged", 85)
 
     """
     6. 合并字幕/BGM/配音/视频
     """
+    update_progress("merge", "final", 90)
     output_video_path = path.join(utils.task_dir(task_id), f"combined.mp4")
     logger.info(f"\n\n## 6. 最后一步: 合并字幕/BGM/配音/视频 -> {output_video_path}")
 
@@ -464,6 +492,7 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
         options=options
     )
 
+    update_progress("merge", "complete", 95)
     final_video_paths.append(output_video_path)
     combined_video_paths.append(combined_video_path)
 
@@ -474,6 +503,7 @@ def start_subclip_unified(task_id: str, params: VideoClipParams):
         "combined_videos": combined_video_paths
     }
     sm.state.update_task(task_id, state=const.TASK_STATE_COMPLETE, progress=100, **kwargs)
+    update_progress("complete", "done", 100)
     return kwargs
 
 

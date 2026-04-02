@@ -9,6 +9,40 @@ import tempfile
 from typing import Dict, List, Optional, Tuple, Union
 from loguru import logger
 
+# 全局变量，存储 ffmpeg 可执行文件路径
+_FFMPEG_PATH = None
+
+# 模块加载时尝试设置 ffmpeg 路径
+def _init_ffmpeg_path():
+    """初始化 ffmpeg 路径，在模块加载时调用"""
+    global _FFMPEG_PATH
+    try:
+        # 首先检查系统 PATH 中是否有 ffmpeg
+        result = subprocess.run(['ffmpeg', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        if result.returncode == 0:
+            _FFMPEG_PATH = 'ffmpeg'
+            return
+    except Exception:
+        pass
+
+    # 尝试使用 imageio 的 ffmpeg
+    try:
+        import imageio
+        ffmpeg_path = imageio.plugins.ffmpeg.get_exe()
+        if ffmpeg_path and os.path.exists(ffmpeg_path):
+            _FFMPEG_PATH = ffmpeg_path
+            # 将 imageio ffmpeg 目录添加到 PATH
+            ffmpeg_dir = os.path.dirname(ffmpeg_path)
+            current_path = os.environ.get('PATH', '')
+            if ffmpeg_dir not in current_path:
+                os.environ['PATH'] = ffmpeg_dir + os.pathsep + current_path
+            logger.info(f"已将 imageio ffmpeg 添加到 PATH: {ffmpeg_path}")
+    except Exception as e:
+        logger.debug(f"无法获取 imageio ffmpeg: {e}")
+
+# 模块加载时初始化
+_init_ffmpeg_path()
+
 # 全局变量，存储检测到的硬件加速信息
 _FFMPEG_HW_ACCEL_INFO = {
     "available": False,
@@ -59,6 +93,40 @@ ENCODER_MAPPING = {
     "dxva2": "libx264",    # DXVA2只用于解码
     "software": "libx264"
 }
+
+
+def get_ffmpeg_path() -> str:
+    """
+    获取 ffmpeg 可执行文件的路径
+
+    Returns:
+        str: ffmpeg 路径，如果未找到则返回 'ffmpeg'
+    """
+    global _FFMPEG_PATH
+    if _FFMPEG_PATH:
+        return _FFMPEG_PATH
+
+    # 如果还没有初始化，尝试再次获取
+    _init_ffmpeg_path()
+    return _FFMPEG_PATH or 'ffmpeg'
+
+
+def get_ffprobe_path() -> str:
+    """
+    获取 ffprobe 可执行文件的路径
+
+    Returns:
+        str: ffprobe 路径，如果未找到则返回 'ffprobe'
+    """
+    global _FFMPEG_PATH
+    if _FFMPEG_PATH and _FFMPEG_PATH != 'ffmpeg':
+        # 如果 ffmpeg 路径已确定，ffprobe 应该在同一目录
+        ffmpeg_dir = os.path.dirname(_FFMPEG_PATH)
+        ffprobe_name = 'ffprobe.exe' if os.name == 'nt' else 'ffprobe'
+        ffprobe_path = os.path.join(ffmpeg_dir, ffprobe_name)
+        if os.path.exists(ffprobe_path):
+            return ffprobe_path
+    return 'ffprobe'
 
 
 def get_null_input() -> str:
@@ -117,7 +185,7 @@ def cleanup_test_video(path: str) -> None:
 
 def check_ffmpeg_installation() -> bool:
     """
-    检查ffmpeg是否已安装
+    检查ffmpeg是否已安装，如果系统PATH中没有则尝试使用imageio的ffmpeg
 
     Returns:
         bool: 如果安装则返回True，否则返回False
@@ -131,6 +199,20 @@ def check_ffmpeg_installation() -> bool:
             subprocess.run(['ffmpeg', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         return True
     except (subprocess.SubprocessError, FileNotFoundError):
+        # 尝试使用 imageio 的 ffmpeg
+        try:
+            import imageio
+            ffmpeg_path = imageio.plugins.ffmpeg.get_exe()
+            if ffmpeg_path and os.path.exists(ffmpeg_path):
+                # 将 imageio ffmpeg 目录添加到 PATH
+                ffmpeg_dir = os.path.dirname(ffmpeg_path)
+                current_path = os.environ.get('PATH', '')
+                if ffmpeg_dir not in current_path:
+                    os.environ['PATH'] = ffmpeg_dir + os.pathsep + current_path
+                    logger.info(f"已将 imageio ffmpeg 添加到 PATH: {ffmpeg_path}")
+                return True
+        except Exception as e:
+            logger.debug(f"无法获取 imageio ffmpeg: {e}")
         logger.error("ffmpeg未安装或不在系统PATH中，请安装ffmpeg")
         return False
 
