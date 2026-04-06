@@ -11,6 +11,7 @@ from app.services.auth import get_auth_service
 from app.services.membership import get_membership_service
 from app.services.project_manager import get_project_manager, ProjectStatus
 from app.services.stats_collector import get_stats_collector
+from app.services.draft_manager import get_draft_manager
 
 
 def clear_directory(dir_path, tr):
@@ -36,7 +37,9 @@ def clear_directory(dir_path, tr):
 
 def render_system_panel(tr):
     """渲染系统设置面板"""
-    with st.expander(tr("System settings"), expanded=False):
+    # 系统设置使用 container 而非 expander，避免与内部 expander 冲突
+    with st.container(border=True):
+        st.write(tr("System settings"))
         col1, col2, col3 = st.columns(3)
 
         with col1:
@@ -51,12 +54,12 @@ def render_system_panel(tr):
             if st.button(tr("Clear tasks"), use_container_width=True):
                 clear_directory(os.path.join(storage_dir(), "tasks"), tr)
 
-        # 模板管理
-        st.divider()
-        render_template_panel(tr)
+    # 模板管理（在 container 外部避免 expander 嵌套问题）
+    st.divider()
+    render_template_panel(tr)
 
-        # 用户中心和项目管理
-        render_user_and_project_panels(tr)
+    # 用户中心和项目管理
+    render_user_and_project_panels(tr)
 
 
 def render_template_panel(tr):

@@ -1324,7 +1324,7 @@ def render_bgm_preview_panel(tr):
         st.write(tr("Background Music Preview"))
 
         # 获取背景音乐列表
-        songs_cache = get_songs_cache()
+        songs_cache = get_songs_cache(utils.resource_dir("songs"))
         if not songs_cache:
             st.info(tr("No background music available"))
             return
